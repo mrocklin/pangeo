@@ -10,6 +10,7 @@ import  socket
 from dask.distributed import Client
 from pangeo import PBSCluster
 
+global logger
 logger = logging.getLogger(__name__)
 
 def parse_command_line(args, description):
@@ -96,8 +97,6 @@ def setup_jlab(client, scheduler_file, jlab_port, dash_port, notebook_dir,
 
 def _main_func(args, description):
     project, workers, walltime, notebookdir, workdir, notebook_port, dashboard_port, job_queue = parse_command_line(args, description)
-
-    logger = get_logger("DEBUG")
     scheduler_file = os.path.join(workdir,"scheduler.json")
     with PBSCluster(queue=job_queue, walltime=walltime, project=project, interface='ib0',\
                     extra="--scheduler-file {} --local-directory {}".
@@ -105,8 +104,8 @@ def _main_func(args, description):
         logger.debug("cluster config is {}".format(cluster.config))
         with Client(cluster) as client:
             workers = cluster.start_workers(workers)
-
             info = client.scheduler_info()
+            logger.debug("client scheduler info {}".format(info))
             if os.path.isfile(scheduler_file):
                 setup_jlab(client, jlab_port=str(notebook_port), dash_port=str(dashboard_port),
                            notebook_dir=notebookdir,
@@ -116,4 +115,5 @@ def _main_func(args, description):
                 logger.warning("No scheduler_file found")
 
 if __name__ == "__main__":
+    logger = get_logger("DEBUG")
     _main_func(sys.argv[1:], __doc__)
