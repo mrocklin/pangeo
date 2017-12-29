@@ -1,7 +1,4 @@
 #!/usr/bin/env python
-from __future__ import absolute_import
-from __future__ import print_function
-
 import os
 import sys
 import argparse
@@ -11,8 +8,9 @@ import time
 import logging
 import  socket
 from dask.distributed import Client
-logger = logging.getLogger(__name__)
+from pangeo import PBSCluster
 
+logger = logging.getLogger(__name__)
 
 def parse_command_line(args, description):
 
@@ -47,31 +45,11 @@ def parse_command_line(args, description):
 
     parser.add_argument("--dashboard-port",type=int,
                         default=8878,
-                        help="Set the notebook tcp/ip port")
+                        help="Set the dask tcp/ip port")
 
     args = parser.parse_args(args)
 
     return args.project, args.workers, args.walltime, args.notebookdir, args.workdir,args.notebook_port, args.dashboard_port, args.queue
-
-
-def launch_job(jobname, project, walltime, job_queue):
-
-    logger.info("submit job {}".format(jobname))
-
-    proc = subprocess.Popen("qsub -A {} -l walltime={} -q {} {}".
-                            format(project, walltime, job_queue, jobname),
-                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,
-                            shell=True)
-
-    output, errput = proc.communicate()
-
-    stat = proc.wait()
-    if stat != 0:
-        print("ERROR stat {}".format(stat))
-
-    search_jobid = re.search("^(\S+)$", output.decode('utf-8'))
-    jobid = search_jobid.group(1)
-    return jobid
 
 
 def start_jlab(dask_scheduler, host=None, port='8888', notebook_dir=''):
@@ -95,12 +73,8 @@ def get_logger(log_level):
     return logger
 
 
-def setup_jlab(scheduler_file, jlab_port, dash_port, notebook_dir,
-        hostname):
-
-    logger.info('getting client with scheduler file: %s' % scheduler_file)
-    client = Client(scheduler_file=scheduler_file, timeout=30)
-    logger.debug('Client: %s' % client)
+def setup_jlab(client, scheduler_file, jlab_port, dash_port, notebook_dir,
+               hostname):
 
     logger.debug('Getting hostname where scheduler is running')
     host = client.run_on_scheduler(socket.gethostname)
@@ -124,36 +98,22 @@ def _main_func(args, description):
     project, workers, walltime, notebookdir, workdir, notebook_port, dashboard_port, job_queue = parse_command_line(args, description)
 
     logger = get_logger("DEBUG")
+    scheduler_file = os.path.join(workdir,"scheduler.json")
+    with PBSCluster(queue=job_queue, walltime=walltime, project=project, interface='ib0',\
+                    extra="--scheduler-file {} --local-directory {}".
+                    format(scheduler_file, workdir)) as cluster:
+        logger.debug("cluster config is {}".format(cluster.config))
+        with Client(cluster) as client:
+            workers = cluster.start_workers(workers)
 
-    jobids = []
-    jobids.append( launch_job("launch-dask-scheduler.sh", project, walltime, job_queue))
-
-    for i in range(workers):
-        jobids.append(launch_job("launch-dask-worker.sh", project, walltime, job_queue))
-
-    scheduler_jobid = jobids[0]
-    wait = True
-    while wait:
-        proc = subprocess.Popen("qstat {} ".
-                                format(scheduler_jobid),
-                                stdout=subprocess.PIPE,stderr=subprocess.PIPE,
-                                shell=True)
-
-        output, errput = proc.communicate()
-        output = output.decode('utf-8')
-        stat = proc.wait()
-        if ' R ' in output:
-            logger.info(" jobid {} started".format(scheduler_jobid))
-            time.sleep(5) # make sure scheduler file is written
-            wait = False
-        if ' Q ' in output:
-            logger.info(" jobid {} in queue".format(scheduler_jobid))
-            time.sleep(5)
-
-    setup_jlab(jlab_port=str(notebook_port), dash_port=str(dashboard_port), notebook_dir=notebookdir,
-               hostname="cheyenne.ucar.edu",
-               scheduler_file=os.path.join(workdir,"scheduler.json"))
-
+            info = client.scheduler_info()
+            if os.path.isfile(scheduler_file):
+                setup_jlab(client, jlab_port=str(notebook_port), dash_port=str(dashboard_port),
+                           notebook_dir=notebookdir,
+                           hostname="cheyenne.ucar.edu",
+                           scheduler_file=scheduler_file)
+            else:
+                logger.warning("No scheduler_file found")
 
 if __name__ == "__main__":
     _main_func(sys.argv[1:], __doc__)
